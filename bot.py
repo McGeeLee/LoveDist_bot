@@ -12,7 +12,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ContextTypes, filters
 )
-from telegram.error import FloodWait, Forbidden
+from telegram.error import RetryAfter, TelegramError
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
@@ -22,8 +22,6 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, select
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set")
 
 DATABASE_URL = "sqlite+aiosqlite:///locations.db"
 
@@ -107,11 +105,21 @@ def rate_limit(action: str, interval_seconds: int = 5):
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+def is_location_expired(updated_at: datetime | None) -> bool:
+    if updated_at is None:
+        return True
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - updated_at > timedelta(hours=24)
+
 # ==================== Bot Core ====================
 class LocationBot:
     def __init__(self):
         # 优化：在生成 Application 时增加基础配置
-        self.app = Application.builder().token(BOT_TOKEN).build()
+        if not BOT_TOKEN:
+            raise ValueError("BOT_TOKEN environment variable is not set")
+        self.app = (Application.builder().token(BOT_TOKEN)
+                    .post_init(self.post_init).post_shutdown(self.post_shutdown).build())
         self.setup_handlers()
 
     @staticmethod
@@ -223,12 +231,12 @@ class LocationBot:
                 result_target = await session.execute(select(User).filter_by(telegram_id=target_info['telegram_id']))
                 target_user = result_target.scalar_one_or_none()
 
-                if not target_user or target_user.latitude is None:
+                if not target_user or not target_user.is_public or target_user.latitude is None:
                     await update.message.reply_text("对方尚未分享位置，无法计算。")
                     return
 
                 # 检查对方位置是否过期（24小时）
-                if datetime.now(timezone.utc) - target_user.last_updated > timedelta(hours=24):
+                if is_location_expired(target_user.last_updated):
                     await update.message.reply_text("⏰ 对方的位置信息已过期（超过24小时未更新）。")
                     return
 
@@ -239,7 +247,7 @@ class LocationBot:
 
                 dist_str = f"{distance*1000:.0f} m" if distance < 1 else f"{distance:.2f} km"
                 
-                privacy_note = "" if db_user.is_public else "\n\n⚠️ *提示：你当前处于私密模式，对方无法通过你的链接反向查询。*"
+                privacy_note = "" if db_user and db_user.is_public else "\n\n⚠️ *提示：你当前处于私密模式，对方无法通过你的链接反向查询。*"
                 await update.message.reply_text(f"📏 直线距离: *{dist_str}*{privacy_note}", parse_mode="Markdown")
                 return
 
@@ -310,17 +318,26 @@ class LocationBot:
         status_msg = await update.message.reply_text(f"🚀 正在发送给 {len(uids)} 位用户...")
 
         for uid in uids:
-            try:
-                await context.bot.send_message(chat_id=uid, text=text)
-                sent += 1
-                # 频率控制：每秒最多 30 条消息是 TG 限制，这里保守点
-                if sent % 20 == 0:
-                    await asyncio.sleep(1)
-            except FloodWait as e:
-                await asyncio.sleep(e.retry_after)
-            except (Forbidden, Exception):
-                failed += 1
-        
+            # Retry the same recipient once, and count every final outcome.
+            for attempt in range(2):
+                try:
+                    await context.bot.send_message(chat_id=uid, text=text)
+                    sent += 1
+                    if sent % 20 == 0:
+                        await asyncio.sleep(1)
+                    break
+                except RetryAfter as error:
+                    if attempt:
+                        failed += 1
+                        break
+                    delay = error.retry_after
+                    if isinstance(delay, timedelta):
+                        delay = delay.total_seconds()
+                    await asyncio.sleep(delay)
+                except TelegramError:
+                    failed += 1
+                    break
+
         await status_msg.edit_text(f"📢 广播完成！\n✅ 成功: {sent}\n❌ 失败: {failed}")
 
     def setup_handlers(self):
@@ -330,12 +347,14 @@ class LocationBot:
         self.app.add_handler(CommandHandler("broadcast", self.broadcast))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
 
-    async def post_init(self):
+    async def post_init(self, application: Application):
         await init_db()
         logger.info("Database & Tables initialized.")
 
+    async def post_shutdown(self, application: Application):
+        await engine.dispose()
+
     def run(self):
-        self.app.post_init = self.post_init
         self.app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":

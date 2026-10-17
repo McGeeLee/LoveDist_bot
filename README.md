@@ -15,9 +15,9 @@ A Telegram bot built with Python-Telegram-Bot and SQLAlchemy async database. Use
 
 ## Tech Stack
 
-- Python 3.10+
-- python-telegram-bot v20.x
-- SQLAlchemy 2.x (async)
+- Python 3.12+
+- python-telegram-bot 22.8
+- SQLAlchemy 2.1 (async)
 - aiosqlite
 - python-dotenv
 
@@ -42,7 +42,7 @@ venv\Scripts\activate      # Windows
 ### 3. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 ```
 
 ### 4. Configure environment variables
@@ -134,3 +134,21 @@ A: Edit `ADMIN_IDS` in `.env` with comma-separated Telegram numeric IDs, then re
 ## License
 
 MIT License
+
+## Reproducible development and checks
+
+Use Python 3.12+ and uv 0.12.23. `uv sync --locked` installs the checked-in
+`uv.lock`; `uv run pytest -q` runs offline regression tests and `uv run ruff check .`
+runs fatal-error lint checks. `requirements.txt` is a hashed production export for
+hosts that require pip; regenerate it with
+`uv export --no-dev --no-emit-project --format requirements-txt --output-file requirements.txt`.
+CI tests Python 3.12, 3.13 and 3.14.
+
+The 22.x migration uses `RetryAfter`, receives `Application` in lifecycle callbacks,
+and disposes the database engine on shutdown. Rate-limited broadcasts retry the
+same recipient once and report every final outcome. Location queries recheck privacy
+at calculation time and interpret SQLite's naive timestamps as UTC.
+
+Tests never start polling, contact Telegram, or require a real token. Back up
+`locations.db` before a separately authorized production rollout; no deployment or
+live Telegram validation is included in this migration.
