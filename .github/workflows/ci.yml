@@ -1,17 +1,22 @@
-name: Resolve and verify dependencies
-on:
-  push:
-  pull_request:
+name: Python checks
+
+on: [push, pull_request]
+
 permissions:
   contents: read
+
 jobs:
-  resolve:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13', '3.14', '3.15']
     env:
-      PYTHON_DOTENV_DISABLED: '1'
-      BOT_TOKEN: ''
+      BOT_TOKEN: '123456:offline-test-token'
       ADMIN_IDS: ''
+      PYTHON_DOTENV_DISABLED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -19,26 +24,23 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.13.6'
-          python-version: '3.15'
-      - name: Generate dependency locks
-        run: |
-          uv lock --upgrade
-          uv export --locked --no-dev --no-emit-project --no-header --format requirements-txt --output-file requirements.txt
-      - name: Return generated public dependency files for review
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          files = {name: Path(name).read_text() for name in ('uv.lock', 'requirements.txt')}
-          print('LOVEDIST_LOCKFILES_JSON=' + json.dumps(files, ensure_ascii=True))
-          PY
-      - run: uv sync --locked
-      - run: uv run --locked ruff check .
-      - run: uv run --locked pytest -q
-      - run: uv run --locked pytest -q
+          python-version: ${{ matrix.python }}
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Check fatal Python errors
+        run: uv run --locked ruff check .
+      - name: Run offline regression tests
+        run: uv run --locked pytest -q
+      - name: Test timedelta RetryAfter compatibility
         env:
           PTB_TIMEDELTA: '1'
-      - name: Audit resolved dependencies
+        run: uv run --locked pytest -q
+      - name: Check requirements export
         run: |
-          uv export --locked --no-emit-project --no-header --format requirements-txt --output-file audit-requirements.txt
-          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --no-deps -r audit-requirements.txt
+          uv export --locked --no-dev --no-emit-project --no-header --format requirements-txt --output-file requirements.txt
+          git diff --exit-code -- requirements.txt
+      - name: Audit runtime and development dependencies
+        if: matrix.python == '3.15'
+        run: |
+          uv export --locked --all-groups --all-extras --no-emit-project --no-hashes --no-header --format requirements-txt --output-file "$RUNNER_TEMP/audit-requirements.txt"
+          uvx --from pip-audit==2.10.1 pip-audit --strict --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit-requirements.txt"
