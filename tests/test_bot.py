@@ -76,7 +76,8 @@ async def test_privacy_rechecked_before_distance(monkeypatch):
         yield session
     monkeypatch.setattr(bot, 'get_session', get_session)
     reply = AsyncMock()
-    update = SimpleNamespace(effective_user=SimpleNamespace(id=99), message=SimpleNamespace(location=SimpleNamespace(latitude=0, longitude=1), reply_text=reply))
+    message = SimpleNamespace(location=SimpleNamespace(latitude=0, longitude=1), reply_text=reply)
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=99), message=message, effective_message=message)
     context = SimpleNamespace(user_data={'target_info': {'telegram_id': 10}})
     await bot.LocationBot.__new__(bot.LocationBot).handle_location(update, context)
     assert '无法计算' in reply.call_args.args[0]

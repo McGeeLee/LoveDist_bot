@@ -81,6 +81,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+# Telegram embeds the bot token in request URLs. Keep application INFO logs,
+# but suppress HTTP request traces, including when the root logger is DEBUG.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _rate_limit_store = {}
@@ -88,14 +92,17 @@ _rate_limit_store = {}
 def rate_limit(action: str, interval_seconds: int = 5):
     def decorator(func):
         async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-            user_id = update.effective_user.id
+            user = update.effective_user
+            message = update.effective_message
+            if user is None or message is None:
+                return
+            user_id = user.id
             key = (user_id, action)
             now = datetime.now(timezone.utc)
             last = _rate_limit_store.get(key)
             if last and (now - last).total_seconds() < interval_seconds:
                 # 默默忽略或回复，这里选择提醒
-                if update.message:
-                    await update.message.reply_text(f"⏳ 速度太快了，请等待 {interval_seconds} 秒。")
+                await message.reply_text(f"⏳ 速度太快了，请等待 {interval_seconds} 秒。")
                 return
             _rate_limit_store[key] = now
             return await func(self, update, context, *args, **kwargs)
@@ -211,7 +218,10 @@ class LocationBot:
     @rate_limit("location_process", interval_seconds=5)
     async def handle_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        loc = update.message.location
+        message = update.effective_message
+        if message is None or message.location is None:
+            return
+        loc = message.location
         lat, lon = loc.latitude, loc.longitude
 
         async with get_session() as session:
@@ -232,12 +242,12 @@ class LocationBot:
                 target_user = result_target.scalar_one_or_none()
 
                 if not target_user or not target_user.is_public or target_user.latitude is None:
-                    await update.message.reply_text("对方尚未分享位置，无法计算。")
+                    await message.reply_text("对方尚未分享位置，无法计算。")
                     return
 
                 # 检查对方位置是否过期（24小时）
                 if is_location_expired(target_user.last_updated):
-                    await update.message.reply_text("⏰ 对方的位置信息已过期（超过24小时未更新）。")
+                    await message.reply_text("⏰ 对方的位置信息已过期（超过24小时未更新）。")
                     return
 
                 distance = self.calculate_distance(lat, lon, target_user.latitude, target_user.longitude)
@@ -248,10 +258,10 @@ class LocationBot:
                 dist_str = f"{distance*1000:.0f} m" if distance < 1 else f"{distance:.2f} km"
                 
                 privacy_note = "" if db_user and db_user.is_public else "\n\n⚠️ *提示：你当前处于私密模式，对方无法通过你的链接反向查询。*"
-                await update.message.reply_text(f"📏 直线距离: *{dist_str}*{privacy_note}", parse_mode="Markdown")
+                await message.reply_text(f"📏 直线距离: *{dist_str}*{privacy_note}", parse_mode="Markdown")
                 return
 
-            await update.message.reply_text("✅ 你的位置已更新，链接现在生效了！")
+            await message.reply_text("✅ 你的位置已更新，链接现在生效了！")
 
     async def privacy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
