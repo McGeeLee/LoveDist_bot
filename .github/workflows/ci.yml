@@ -1,19 +1,44 @@
-name: Python checks
-on: [push, pull_request]
+name: Resolve and verify dependencies
+on:
+  push:
+  pull_request:
 permissions:
   contents: read
 jobs:
-  test:
+  resolve:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ['3.12', '3.13', '3.14']
+    timeout-minutes: 15
+    env:
+      PYTHON_DOTENV_DISABLED: '1'
+      BOT_TOKEN: ''
+      ADMIN_IDS: ''
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: '0.12.23'
-          python-version: ${{ matrix.python }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.6'
+          python-version: '3.15'
+      - name: Generate dependency locks
+        run: |
+          uv lock --upgrade
+          uv export --locked --no-dev --no-emit-project --no-header --format requirements-txt --output-file requirements.txt
+      - name: Return generated public dependency files for review
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = {name: Path(name).read_text() for name in ('uv.lock', 'requirements.txt')}
+          print('LOVEDIST_LOCKFILES_JSON=' + json.dumps(files, ensure_ascii=True))
+          PY
       - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run pytest -q
+      - run: uv run --locked ruff check .
+      - run: uv run --locked pytest -q
+      - run: uv run --locked pytest -q
+        env:
+          PTB_TIMEDELTA: '1'
+      - name: Audit resolved dependencies
+        run: |
+          uv export --locked --no-emit-project --no-header --format requirements-txt --output-file audit-requirements.txt
+          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --no-deps -r audit-requirements.txt

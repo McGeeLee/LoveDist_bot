@@ -126,7 +126,7 @@ location-bot/
 A: Possible reasons: the other person hasn't shared their location, has set privacy to private, or their location hasn't been updated in over 24 hours.
 
 **Q: What are the rate limits?**  
-A: Own location update: 30 seconds/request; distance query: 5 seconds/request; start command: 3 seconds/request.
+A: Location messages and live-location edits: 5 seconds/request; start command: 3 seconds/request.
 
 **Q: How to add more admins?**  
 A: Edit `ADMIN_IDS` in `.env` with comma-separated Telegram numeric IDs, then restart the bot.
@@ -137,12 +137,12 @@ MIT License
 
 ## Reproducible development and checks
 
-Use Python 3.12+ and uv 0.12.23. `uv sync --locked` installs the checked-in
-`uv.lock`; `uv run pytest -q` runs offline regression tests and `uv run ruff check .`
+Use Python 3.12–3.15 (default 3.15) and uv 0.13.6. `uv sync --locked` installs the checked-in
+`uv.lock`; `uv run --locked pytest -q` runs offline regression tests and `uv run --locked ruff check .`
 runs fatal-error lint checks. `requirements.txt` is a hashed production export for
 hosts that require pip; regenerate it with
-`uv export --no-dev --no-emit-project --format requirements-txt --output-file requirements.txt`.
-CI tests Python 3.12, 3.13 and 3.14.
+`uv export --locked --no-dev --no-emit-project --no-header --format requirements-txt --output-file requirements.txt`.
+CI tests Python 3.12, 3.13, 3.14 and 3.15, checks the production export, and audits dependencies.
 
 The 22.x migration uses `RetryAfter`, receives `Application` in lifecycle callbacks,
 and disposes the database engine on shutdown. Rate-limited broadcasts retry the
@@ -152,3 +152,18 @@ at calculation time and interpret SQLite's naive timestamps as UTC.
 Tests never start polling, contact Telegram, or require a real token. Back up
 `locations.db` before a separately authorized production rollout; no deployment or
 live Telegram validation is included in this migration.
+
+## Location edits and logging
+
+Live-location edits arrive as `edited_message`. The location handler and its rate-limit
+reply use `Update.effective_message`, so both initial shares and edits update the same
+user record and recheck the target's privacy and freshness before recording a visit.
+
+Application INFO messages remain enabled. HTTPX and httpcore request traces are
+suppressed below WARNING because Telegram request URLs contain the bot token; do not
+re-enable HTTP request/debug logging with production credentials. Offline tests use
+synthetic tokens, an in-memory HTTP transport and temporary SQLite databases; dotenv
+loading is disabled for the test process.
+
+Current versions, official migration references and security advisories are recorded
+in [DEPENDENCY_REVIEW.md](DEPENDENCY_REVIEW.md).
